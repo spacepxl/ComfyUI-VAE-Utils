@@ -11,6 +11,10 @@ git clone https://github.com/spacepxl/ComfyUI-VAE-Utils
 
 That's it! No extra requirements outside of what ComfyUI already uses.
 
+## Models
+
+[Wan2.1 VAE 2x imageonly real v1](https://huggingface.co/spacepxl/Wan2.1-VAE-upscale2x/blob/main/Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors)
+
 ## Nodes
 
 ### Load VAE (VAE Utils)

@@ -7,7 +7,7 @@ from comfy import model_management
 from comfy.ldm.models.autoencoder import AutoencoderKL, AutoencodingEngine
 from comfy.ldm.cascade.stage_a import StageA
 from comfy.ldm.cascade.stage_c_coder import StageC_coder
-from comfy.ldm.audio.autoencoder import AudioOobleckVAE
+# from comfy.ldm.audio.autoencoder import AudioOobleckVAE
 import comfy.ldm.genmo.vae.model
 import comfy.ldm.lightricks.vae.causal_video_autoencoder
 import comfy.ldm.cosmos.vae
@@ -16,7 +16,7 @@ import comfy.ldm.wan.vae2_2
 import comfy.ldm.hunyuan3d.vae
 import comfy.ldm.ace.vae.music_dcae_pipeline
 import comfy.ldm.hunyuan_video.vae
-import comfy.ldm.mmaudio.vae.autoencoder
+# import comfy.ldm.mmaudio.vae.autoencoder
 import comfy.pixel_space_convert
 
 import comfy.utils
@@ -137,19 +137,19 @@ class CustomVAE(VAE):
                         self.first_stage_model = AutoencodingEngine(regularizer_config={'target': "comfy.ldm.models.autoencoder.DiagonalGaussianRegularizer"},
                                                                     encoder_config={'target': "comfy.ldm.modules.diffusionmodules.model.Encoder", 'params': ddconfig},
                                                                     decoder_config={'target': "comfy.ldm.modules.diffusionmodules.model.Decoder", 'params': ddconfig})
-            elif "decoder.layers.1.layers.0.beta" in sd:
-                self.first_stage_model = AudioOobleckVAE()
-                self.memory_used_encode = lambda shape, dtype: (1000 * shape[2]) * model_management.dtype_size(dtype)
-                self.memory_used_decode = lambda shape, dtype: (1000 * shape[2] * 2048) * model_management.dtype_size(dtype)
-                self.latent_channels = 64
-                self.output_channels = 2
-                self.upscale_ratio = 2048
-                self.downscale_ratio =  2048
-                self.latent_dim = 1
-                self.process_output = lambda audio: audio
-                self.process_input = lambda audio: audio
-                self.working_dtypes = [torch.float16, torch.bfloat16, torch.float32]
-                self.disable_offload = True
+            # elif "decoder.layers.1.layers.0.beta" in sd:
+            #     self.first_stage_model = AudioOobleckVAE()
+            #     self.memory_used_encode = lambda shape, dtype: (1000 * shape[2]) * model_management.dtype_size(dtype)
+            #     self.memory_used_decode = lambda shape, dtype: (1000 * shape[2] * 2048) * model_management.dtype_size(dtype)
+            #     self.latent_channels = 64
+            #     self.output_channels = 2
+            #     self.upscale_ratio = 2048
+            #     self.downscale_ratio =  2048
+            #     self.latent_dim = 1
+            #     self.process_output = lambda audio: audio
+            #     self.process_input = lambda audio: audio
+            #     self.working_dtypes = [torch.float16, torch.bfloat16, torch.float32]
+            #     self.disable_offload = True
             elif "blocks.2.blocks.3.stack.5.weight" in sd or "decoder.blocks.2.blocks.3.stack.5.weight" in sd or "layers.4.layers.1.attn_block.attn.qkv.weight" in sd or "encoder.layers.4.layers.1.attn_block.attn.qkv.weight" in sd: #genmo mochi vae
                 if "blocks.2.blocks.3.stack.5.weight" in sd:
                     sd = comfy.utils.state_dict_prefix_replace(sd, {"": "decoder."})

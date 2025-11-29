@@ -1,10 +1,13 @@
+import copy
 import torch
 import torch.nn.functional as F
 
 import comfy.utils
+import comfy.model_management
 import folder_paths
 from nodes import VAELoader
 from .src.sd import CustomVAE
+from .latent_upscale.model import latent_upscale_models
 
 
 class VAEUtils_CustomVAELoader(VAELoader):
@@ -87,7 +90,35 @@ class VAEUtils_VAEDecodeTiled:
         return (images,)
 
 
+class VAEUtils_LatentUpscale:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "samples": ("LATENT", ),
+                "model": (list(latent_upscale_models.keys()), ),
+            }
+        }
+    
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "upscale"
+    CATEGORY = "VAE-Utils"
+    
+    def upscale(self, samples, model):
+        device = comfy.model_management.get_torch_device()
+        model = latent_upscale_models[model]().to(device)
+        
+        latents = samples["samples"].to(dtype=torch.float32, device=device)
+        upscaled_latents = model(latents).to(comfy.model_management.intermediate_device())
+        
+        samples = copy.deepcopy(samples)
+        samples["samples"] = upscaled_latents
+        
+        return (samples, )
+
+
 COMBINED_MAPPINGS = {
     "VAEUtils_CustomVAELoader": (VAEUtils_CustomVAELoader, "Load VAE (VAE Utils)"),
     "VAEUtils_VAEDecodeTiled": (VAEUtils_VAEDecodeTiled, "VAE Decode (VAE Utils)"),
+    "VAEUtils_LatentUpscale": (VAEUtils_LatentUpscale, "Latent Upscale (VAE Utils)"),
 }

@@ -25,6 +25,14 @@ Direct replacement for native Load VAE node, but with added input/output channel
 
 Decode latents with optional auto detected upscaling, and optional tiling
 
+### Latent Upscale (VAE Utils)
+
+![latent upscale comparison](assets/wan21_latent_upscale_2x.jpg)
+
+Simple neural latent upscaler (right), far from optimal but much better than naive bilinear/bislerp interpolation (left).
+
+Currently supported: Wan2.1 2x
+
 ## Workflows
 
 [workflow/workflow_wan_t2i_upscale2x.png](https://github.com/spacepxl/ComfyUI-VAE-Utils/blob/main/workflow/workflow_wan_t2i_upscale2x.png)

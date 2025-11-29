@@ -10,7 +10,7 @@ from .src.sd import CustomVAE
 class VAEUtils_CustomVAELoader(VAELoader):
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "vae_name": (s.vae_list(), )}}
+        return {"required": { "vae_name": (s.vae_list(s), )}}
     
     RETURN_TYPES = ("VAE",)
     FUNCTION = "load_vae"

@@ -11,9 +11,13 @@ from .latent_upscale.model import latent_upscale_models
 
 
 class VAEUtils_CustomVAELoader(VAELoader):
+    @staticmethod
+    def vae_list():
+        return folder_paths.get_filename_list("vae")
+    
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "vae_name": (s.vae_list(s), )}}
+        return {"required": { "vae_name": (s.vae_list(), )}}
     
     RETURN_TYPES = ("VAE",)
     FUNCTION = "load_vae"

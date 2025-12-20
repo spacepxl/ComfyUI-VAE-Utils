@@ -41,6 +41,7 @@ class CustomVAE(VAE):
         self.latent_dim = 2
         self.input_channels = 3
         self.output_channels = 3
+        self.real_output_channels = 3
         self.pad_channel_value = None
         self.process_input = lambda image: image * 2.0 - 1.0
         self.process_output = lambda image: torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0)
@@ -251,7 +252,7 @@ class CustomVAE(VAE):
                     self.input_channels = sd["encoder.conv1.weight"].shape[1]
                     # self.output_channels = sd["decoder.head.2.weight"].shape[0]
                     self.output_channels = self.input_channels
-                    raw_output_channels = sd["decoder.head.2.weight"].shape[0]
+                    self.real_output_channels = sd["decoder.head.2.weight"].shape[0]
                     self.latent_dim = 3
                     self.latent_channels = 16
                     self.pad_channel_value = 1.0
@@ -259,7 +260,7 @@ class CustomVAE(VAE):
                     ddconfig = {
                         "in_channels": self.input_channels,
                         # "out_channels": self.output_channels,
-                        "out_channels": raw_output_channels,
+                        "out_channels": self.real_output_channels,
                         "dim": 96,
                         "z_dim": self.latent_channels,
                         "dim_mult": [1, 2, 4, 4],
@@ -361,3 +362,18 @@ class CustomVAE(VAE):
 
         self.patcher = comfy.model_patcher.ModelPatcher(self.first_stage_model, load_device=self.device, offload_device=offload_device)
         logging.info("VAE load device: {}, offload device: {}, dtype: {}".format(self.device, offload_device, self.vae_dtype))
+
+    def decode_tiled_3d(self, samples, tile_t=999, tile_x=32, tile_y=32, overlap=(1, 8, 8)):
+        decode_fn = lambda a: self.first_stage_model.decode(a.to(self.vae_dtype).to(self.device)).float()
+        return self.process_output(
+            comfy.utils.tiled_scale_multidim(
+                samples,
+                decode_fn,
+                tile=(tile_t, tile_x, tile_y),
+                overlap=overlap,
+                upscale_amount=self.upscale_ratio,
+                out_channels=self.real_output_channels,
+                index_formulas=self.upscale_index_formula,
+                output_device=self.output_device,
+            )
+        )

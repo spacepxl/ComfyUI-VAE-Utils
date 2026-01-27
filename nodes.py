@@ -229,6 +229,7 @@ class VAEUtils_TileModelPatch:
             t = args["timestep"]
             c = args["c"]
             c_concat = c.get("c_concat", None)
+            vace_context = c.get("vace_context", None)
             # transformer_options = c.get("transformer_options", {})
             
             if c_concat is not None:
@@ -254,11 +255,14 @@ class VAEUtils_TileModelPatch:
                     if t_tiles is not None:
                         for t_idx, (t_start, t_end) in enumerate(t_tiles):
                             # slice inputs (todo: any other conditions? controlnets etc)
-                            x_tile = x[:, :, t_start:t_end, h_start:h_end, w_start:w_end]
-                            c_concat_tile = c_concat[:, :, t_start:t_end, h_start:h_end, w_start:w_end] if c_concat is not None else None
-                            
+                            x_tile = x[..., t_start:t_end, h_start:h_end, w_start:w_end]
                             c_tile = c.copy()
-                            c_tile["c_concat"] = c_concat_tile
+                            
+                            if c_concat is not None:
+                                c_tile["c_concat"] = c_concat[..., t_start:t_end, h_start:h_end, w_start:w_end]
+                            
+                            if vace_context is not None:
+                                c_tile["vace_context"] = vace_context[..., t_start:t_end, h_start:h_end, w_start:w_end]
                             
                             tile_out = apply_model(x_tile, t, **c_tile)
                             
@@ -278,11 +282,11 @@ class VAEUtils_TileModelPatch:
                             progress_bar.update(1)
                     
                     else:
-                        x_tile = x[:, :, h_start:h_end, w_start:w_end]
-                        c_concat_tile = c_concat[:, :, h_start:h_end, w_start:w_end] if c_concat is not None else None
-                        
+                        x_tile = x[..., h_start:h_end, w_start:w_end]
                         c_tile = c.copy()
-                        c_tile["c_concat"] = c_concat_tile
+                        
+                        if c_concat is not None:
+                            c_tile["c_concat"] = c_concat[..., h_start:h_end, w_start:w_end]
                         
                         tile_out = apply_model(x_tile, t, **c_tile)
                         

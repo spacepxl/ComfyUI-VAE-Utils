@@ -11,6 +11,7 @@ import folder_paths
 from nodes import VAELoader
 from .src.sd import CustomVAE
 from .latent_upscale.model import latent_upscale_models
+from .latent_upscale.latent_projector import Wan21_latent_projector
 
 
 class VAEUtils_CustomVAELoader(VAELoader):
@@ -148,6 +149,35 @@ class VAEUtils_LatentUpscale:
         samples["samples"] = upscaled_latents
         
         return (samples, )
+
+
+class VAEUtils_WanLatentPreview:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "samples": ("LATENT", ),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "upscale"
+    CATEGORY = "VAE-Utils"
+    
+    def upscale(self, samples):
+        device = comfy.model_management.intermediate_device()
+        projector = Wan21_latent_projector().to(device)
+        
+        latents = samples["samples"].to(dtype=torch.float32, device=device)
+        pixels = projector(latents).to(comfy.model_management.intermediate_device())
+        pixels = pixels * 0.5 + 0.5
+        
+        f, h, w = pixels.shape[-3:]
+        pixels = F.interpolate(pixels, size=(f, h//8, w//8), mode="area")
+        
+        pixels = [b.movedim(0, -1) for b in pixels] # CFHW -> FHWC
+        pixels = torch.cat(pixels, dim=0) # (BF)HWC
+        return (pixels, )
 
 
 def get_tiles(length, tile_size, min_overlap):
@@ -402,6 +432,7 @@ COMBINED_MAPPINGS = {
     "VAEUtils_DisableVAEOffload": (VAEUtils_DisableVAEOffload, "Disable VAE Offload (VAE Utils)"),
     "VAEUtils_VAEDecodeTiled": (VAEUtils_VAEDecodeTiled, "VAE Decode (VAE Utils)"),
     "VAEUtils_LatentUpscale": (VAEUtils_LatentUpscale, "Latent Upscale (VAE Utils)"),
+    "VAEUtils_WanLatentPreview": (VAEUtils_WanLatentPreview, "Wan Latent Preview (VAE Utils)"),
     "VAEUtils_TileModelPatch": (VAEUtils_TileModelPatch, "Tile Model Patch (VAE Utils)"),
     "VAEUtils_VisualizeTiles": (VAEUtils_VisualizeTiles, "Visualize Tiles (VAE Utils)"),
     "VAEUtils_ScaleLatents": (VAEUtils_ScaleLatents, "Scale/Unscale Latents (VAE Utils)"),

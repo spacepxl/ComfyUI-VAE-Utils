@@ -109,7 +109,16 @@ class VAEUtils_VAEDecodeTiled:
         
         if len(images.shape) == 5: #Combine batches
             images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
-        
+
+        # Safety guard for ComfyUI PRs #11405 / #11406 regression:
+        # If process_output was not applied through the inherited VAE.decode() path the raw
+        # decoder output lands in [-1, 1].  Values below 0 are clamped to black by save/preview
+        # nodes, producing the dark/burned look.  Detect and correct here.
+        # This guard is safe on correctly-decoded images because they are always in [0, 1]
+        # so min >= 0 and the branch never fires.
+        if images.min() < -0.1:
+            images = torch.clamp((images.float() + 1.0) / 2.0, min=0.0, max=1.0)
+
         if upscale < 1:
             ch = images.shape[-1]
             if ch == 3:
@@ -119,8 +128,10 @@ class VAEUtils_VAEDecodeTiled:
                     upscale = round((ch // 3) ** 0.5)
                 else:
                     raise Exception("Couldn't determine upscale factor, try setting the value manually instead")
-        
-        images = F.pixel_shuffle(images.movedim(-1, 1), upscale_factor=int(upscale)).movedim(1, -1)
+
+        if upscale > 1:
+            images = F.pixel_shuffle(images.movedim(-1, 1), upscale_factor=int(upscale)).movedim(1, -1)
+
         return (images, )
 
 

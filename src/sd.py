@@ -363,6 +363,47 @@ class CustomVAE(VAE):
         self.patcher = comfy.model_patcher.ModelPatcher(self.first_stage_model, load_device=self.device, offload_device=offload_device)
         logging.info("VAE load device: {}, offload device: {}, dtype: {}".format(self.device, offload_device, self.vae_dtype))
 
+    def decode(self, samples_in):
+        """
+        Override VAE.decode() to fix a regression introduced in ComfyUI PRs #11405 / #11406
+        (merged Dec 18 2025).  Those PRs changed the 3D untiled decode path inside
+        VAE.decode() so that it no longer routes through decode_tiled_3d for subclasses;
+        it now does inline channel allocation and trimming that breaks CustomVAE because it
+        only sees self.output_channels (= input_channels = 3) and ignores
+        self.real_output_channels (the actual decoder head output count, e.g. 12 for the
+        Wan 2x upscale VAE).  process_output was also no longer guaranteed to be applied
+        through that path.
+
+        For 2D VAEs (latent_dim != 3) we delegate to the parent as before.
+        For 3D VAEs (WanVAE family: Wan 2.1, Wan 2.2, Qwen-Image, Wan 2x upscale) we do
+        the model-loading bookkeeping ourselves, then call our own decode_tiled_3d which
+        already handles real_output_channels and process_output correctly.
+        """
+        if self.latent_dim != 3:
+            return super().decode(samples_in)
+
+        # Mirror the memory-management preamble from the parent's decode().
+        memory_used = self.memory_used_decode(samples_in.shape, self.vae_dtype)
+        model_management.load_models_gpu([self.patcher], memory_required=memory_used)
+
+        # decode_tiled_3d returns process_output(tiled_scale_multidim(...)) whose shape is
+        # [B, real_output_channels, T_out, H_out, W_out]  (5-D for multi-frame video)
+        # or [B, real_output_channels, H_out, W_out]       (4-D if tiled_scale_multidim
+        #                                                    squeezed the temporal dim)
+        images = self.decode_tiled_3d(samples_in)
+
+        # Normalise to [B*T, H, W, C] — same layout that the parent returns and that
+        # VAEUtils_VAEDecodeTiled.decode() expects (it has its own 5-D reshape guard too).
+        if images.ndim == 5:
+            B, C, T, H, W = images.shape
+            images = images.permute(0, 2, 3, 4, 1).reshape(B * T, H, W, C)
+        elif images.ndim == 4:
+            # Already [B, C, H, W] — just move channels to last dim.
+            images = images.movedim(1, -1)
+        # ndim == 3 or anything unexpected: leave as-is and let downstream handle it.
+
+        return images
+
     def decode_tiled_3d(self, samples, tile_t=999, tile_x=32, tile_y=32, overlap=(1, 8, 8)):
         decode_fn = lambda a: self.first_stage_model.decode(a.to(self.vae_dtype).to(self.device)).float()
         return self.process_output(

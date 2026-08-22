@@ -4,27 +4,37 @@ import copy
 import math
 from tqdm.auto import tqdm
 
-import comfy.utils
+import folder_paths
 import comfy.model_management
 import comfy.latent_formats
-import folder_paths
+import comfy.sd
+import comfy.utils
 from nodes import VAELoader
-from .src.sd import CustomVAE
 from .latent_upscale.model import latent_upscale_models
 from .latent_upscale.latent_projector import Wan21_latent_projector
+from .managed_models import ManagedAuxiliaryModel
+from .vae_patch import is_wan_upscale_vae, patch_wan_upscale_vae, set_vae_offload_policy
+
+
+def load_fp32_vae_patcher(vae_path, metadata=None, device=None, disable_dynamic=False):
+    sd = comfy.utils.load_torch_file(vae_path)
+    vae = comfy.sd.VAE(sd=sd, metadata=metadata, device=device, dtype=torch.float32)
+    vae.throw_exception_if_invalid()
+    return vae.patcher
 
 
 class VAEUtils_CustomVAELoader(VAELoader):
     @staticmethod
     def vae_list():
         return folder_paths.get_filename_list("vae")
-    
+
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "vae_name": (s.vae_list(), ),
                 "disable_offload": ("BOOLEAN", {"default": True}),
+                "precision": (["auto", "fp32"], {"default": "auto"}),
             }
         }
     
@@ -32,18 +42,18 @@ class VAEUtils_CustomVAELoader(VAELoader):
     FUNCTION = "load_vae"
     CATEGORY = "VAE-Utils"
 
-    def load_vae(self, vae_name, disable_offload):
-        if vae_name == "pixel_space":
-            sd = {}
-            sd["pixel_space_vae"] = torch.tensor(1.0)
-        elif vae_name in ["taesd", "taesdxl", "taesd3", "taef1"]:
-            sd = self.load_taesd(vae_name)
+    def load_vae(self, vae_name, disable_offload, precision="auto"):
+        if precision == "auto":
+            vae = super().load_vae(vae_name)[0]
         else:
             vae_path = folder_paths.get_full_path_or_raise("vae", vae_name)
-            sd = comfy.utils.load_torch_file(vae_path)
-        vae = CustomVAE(sd=sd)
-        vae.throw_exception_if_invalid()
-        vae.disable_offload = disable_offload
+            sd, metadata = comfy.utils.load_torch_file(vae_path, return_metadata=True)
+            vae = comfy.sd.VAE(sd=sd, metadata=metadata, dtype=torch.float32)
+            vae.throw_exception_if_invalid()
+            vae.patcher.cached_patcher_init = (load_fp32_vae_patcher, (vae_path, metadata, None))
+        if is_wan_upscale_vae(vae):
+            vae = patch_wan_upscale_vae(vae)
+        vae = set_vae_offload_policy(vae, disable_offload)
         return (vae, )
 
 
@@ -62,9 +72,20 @@ class VAEUtils_DisableVAEOffload:
     CATEGORY = "VAE-Utils"
 
     def set_offload(self, vae, disable_offload):
-        vae = copy.copy(vae)
-        vae.disable_offload = disable_offload
-        return (vae, )
+        return (set_vae_offload_policy(vae, disable_offload), )
+
+
+class VAEUtils_PatchWanUpscaleVAE:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {"vae": ("VAE", )}}
+
+    RETURN_TYPES = ("VAE",)
+    FUNCTION = "patch"
+    CATEGORY = "VAE-Utils"
+
+    def patch(self, vae):
+        return (patch_wan_upscale_vae(vae), )
 
 
 class VAEUtils_VAEDecodeTiled:
@@ -136,6 +157,10 @@ class VAEUtils_VAEDecodeTiled:
 
 
 class VAEUtils_LatentUpscale:
+    def __init__(self):
+        self._managed_model = None
+        self._managed_model_name = None
+
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -150,19 +175,22 @@ class VAEUtils_LatentUpscale:
     CATEGORY = "VAE-Utils"
     
     def upscale(self, samples, model):
-        device = comfy.model_management.get_torch_device()
-        model = latent_upscale_models[model]().to(device)
-        
-        latents = samples["samples"].to(dtype=torch.float32, device=device)
-        upscaled_latents = model(latents).to(comfy.model_management.intermediate_device())
-        
-        samples = copy.deepcopy(samples)
+        if self._managed_model is None or self._managed_model_name != model:
+            self._managed_model = ManagedAuxiliaryModel(latent_upscale_models[model])
+            self._managed_model_name = model
+
+        upscaled_latents = self._managed_model.run(samples["samples"])
+
+        samples = samples.copy()
         samples["samples"] = upscaled_latents
         
         return (samples, )
 
 
 class VAEUtils_WanLatentPreview:
+    def __init__(self):
+        self._managed_projector = None
+
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -176,18 +204,21 @@ class VAEUtils_WanLatentPreview:
     CATEGORY = "VAE-Utils"
     
     def upscale(self, samples):
-        device = comfy.model_management.intermediate_device()
-        projector = Wan21_latent_projector().to(device)
-        
-        latents = samples["samples"].to(dtype=torch.float32, device=device)
-        pixels = projector(latents).to(comfy.model_management.intermediate_device())
-        pixels = pixels * 0.5 + 0.5
-        
-        f, h, w = pixels.shape[-3:]
-        pixels = F.interpolate(pixels, size=(f, h//8, w//8), mode="area")
-        
-        pixels = [b.movedim(0, -1) for b in pixels] # CFHW -> FHWC
-        pixels = torch.cat(pixels, dim=0) # (BF)HWC
+        if self._managed_projector is None:
+            self._managed_projector = ManagedAuxiliaryModel(Wan21_latent_projector)
+
+        def postprocess(pixels):
+            pixels = pixels * 0.5 + 0.5
+            frames, height, width = pixels.shape[-3:]
+            pixels = F.interpolate(
+                pixels,
+                size=(frames, height // 8, width // 8),
+                mode="area",
+            )
+            pixels = [batch.movedim(0, -1) for batch in pixels]
+            return torch.cat(pixels, dim=0)
+
+        pixels = self._managed_projector.run(samples["samples"], postprocess)
         return (pixels, )
 
 
@@ -441,6 +472,7 @@ class VAEUtils_ScaleLatents:
 COMBINED_MAPPINGS = {
     "VAEUtils_CustomVAELoader": (VAEUtils_CustomVAELoader, "Load VAE (VAE Utils)"),
     "VAEUtils_DisableVAEOffload": (VAEUtils_DisableVAEOffload, "Disable VAE Offload (VAE Utils)"),
+    "VAEUtils_PatchWanUpscaleVAE": (VAEUtils_PatchWanUpscaleVAE, "Patch Wan Upscale VAE (VAE Utils)"),
     "VAEUtils_VAEDecodeTiled": (VAEUtils_VAEDecodeTiled, "VAE Decode (VAE Utils)"),
     "VAEUtils_LatentUpscale": (VAEUtils_LatentUpscale, "Latent Upscale (VAE Utils)"),
     "VAEUtils_WanLatentPreview": (VAEUtils_WanLatentPreview, "Wan Latent Preview (VAE Utils)"),

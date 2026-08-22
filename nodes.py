@@ -12,6 +12,7 @@ from nodes import VAELoader
 from .src.sd import CustomVAE
 from .latent_upscale.model import latent_upscale_models
 from .latent_upscale.latent_projector import Wan21_latent_projector
+from .managed_models import ManagedAuxiliaryModel
 
 
 class VAEUtils_CustomVAELoader(VAELoader):
@@ -41,9 +42,8 @@ class VAEUtils_CustomVAELoader(VAELoader):
         else:
             vae_path = folder_paths.get_full_path_or_raise("vae", vae_name)
             sd = comfy.utils.load_torch_file(vae_path)
-        vae = CustomVAE(sd=sd)
+        vae = CustomVAE(sd=sd, disable_offload=disable_offload)
         vae.throw_exception_if_invalid()
-        vae.disable_offload = disable_offload
         return (vae, )
 
 
@@ -63,6 +63,13 @@ class VAEUtils_DisableVAEOffload:
 
     def set_offload(self, vae, disable_offload):
         vae = copy.copy(vae)
+        if hasattr(vae, "patcher"):
+            vae.patcher = vae.patcher.clone()
+            vae.patcher.offload_device = (
+                vae.patcher.load_device
+                if disable_offload
+                else comfy.model_management.vae_offload_device()
+            )
         vae.disable_offload = disable_offload
         return (vae, )
 
@@ -136,6 +143,10 @@ class VAEUtils_VAEDecodeTiled:
 
 
 class VAEUtils_LatentUpscale:
+    def __init__(self):
+        self._managed_model = None
+        self._managed_model_name = None
+
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -150,19 +161,22 @@ class VAEUtils_LatentUpscale:
     CATEGORY = "VAE-Utils"
     
     def upscale(self, samples, model):
-        device = comfy.model_management.get_torch_device()
-        model = latent_upscale_models[model]().to(device)
-        
-        latents = samples["samples"].to(dtype=torch.float32, device=device)
-        upscaled_latents = model(latents).to(comfy.model_management.intermediate_device())
-        
-        samples = copy.deepcopy(samples)
+        if self._managed_model is None or self._managed_model_name != model:
+            self._managed_model = ManagedAuxiliaryModel(latent_upscale_models[model])
+            self._managed_model_name = model
+
+        upscaled_latents = self._managed_model.run(samples["samples"])
+
+        samples = samples.copy()
         samples["samples"] = upscaled_latents
         
         return (samples, )
 
 
 class VAEUtils_WanLatentPreview:
+    def __init__(self):
+        self._managed_projector = None
+
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -176,18 +190,21 @@ class VAEUtils_WanLatentPreview:
     CATEGORY = "VAE-Utils"
     
     def upscale(self, samples):
-        device = comfy.model_management.intermediate_device()
-        projector = Wan21_latent_projector().to(device)
-        
-        latents = samples["samples"].to(dtype=torch.float32, device=device)
-        pixels = projector(latents).to(comfy.model_management.intermediate_device())
-        pixels = pixels * 0.5 + 0.5
-        
-        f, h, w = pixels.shape[-3:]
-        pixels = F.interpolate(pixels, size=(f, h//8, w//8), mode="area")
-        
-        pixels = [b.movedim(0, -1) for b in pixels] # CFHW -> FHWC
-        pixels = torch.cat(pixels, dim=0) # (BF)HWC
+        if self._managed_projector is None:
+            self._managed_projector = ManagedAuxiliaryModel(Wan21_latent_projector)
+
+        def postprocess(pixels):
+            pixels = pixels * 0.5 + 0.5
+            frames, height, width = pixels.shape[-3:]
+            pixels = F.interpolate(
+                pixels,
+                size=(frames, height // 8, width // 8),
+                mode="area",
+            )
+            pixels = [batch.movedim(0, -1) for batch in pixels]
+            return torch.cat(pixels, dim=0)
+
+        pixels = self._managed_projector.run(samples["samples"], postprocess)
         return (pixels, )
 
 

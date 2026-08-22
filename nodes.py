@@ -4,28 +4,37 @@ import copy
 import math
 from tqdm.auto import tqdm
 
-import comfy.utils
+import folder_paths
 import comfy.model_management
 import comfy.latent_formats
-import folder_paths
+import comfy.sd
+import comfy.utils
 from nodes import VAELoader
-from .src.sd import CustomVAE
 from .latent_upscale.model import latent_upscale_models
 from .latent_upscale.latent_projector import Wan21_latent_projector
 from .managed_models import ManagedAuxiliaryModel
+from .vae_patch import is_wan_upscale_vae, patch_wan_upscale_vae, set_vae_offload_policy
+
+
+def load_fp32_vae_patcher(vae_path, metadata=None, device=None, disable_dynamic=False):
+    sd = comfy.utils.load_torch_file(vae_path)
+    vae = comfy.sd.VAE(sd=sd, metadata=metadata, device=device, dtype=torch.float32)
+    vae.throw_exception_if_invalid()
+    return vae.patcher
 
 
 class VAEUtils_CustomVAELoader(VAELoader):
     @staticmethod
     def vae_list():
         return folder_paths.get_filename_list("vae")
-    
+
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "vae_name": (s.vae_list(), ),
                 "disable_offload": ("BOOLEAN", {"default": True}),
+                "precision": (["auto", "fp32"], {"default": "auto"}),
             }
         }
     
@@ -33,17 +42,18 @@ class VAEUtils_CustomVAELoader(VAELoader):
     FUNCTION = "load_vae"
     CATEGORY = "VAE-Utils"
 
-    def load_vae(self, vae_name, disable_offload):
-        if vae_name == "pixel_space":
-            sd = {}
-            sd["pixel_space_vae"] = torch.tensor(1.0)
-        elif vae_name in ["taesd", "taesdxl", "taesd3", "taef1"]:
-            sd = self.load_taesd(vae_name)
+    def load_vae(self, vae_name, disable_offload, precision="auto"):
+        if precision == "auto":
+            vae = super().load_vae(vae_name)[0]
         else:
             vae_path = folder_paths.get_full_path_or_raise("vae", vae_name)
-            sd = comfy.utils.load_torch_file(vae_path)
-        vae = CustomVAE(sd=sd, disable_offload=disable_offload)
-        vae.throw_exception_if_invalid()
+            sd, metadata = comfy.utils.load_torch_file(vae_path, return_metadata=True)
+            vae = comfy.sd.VAE(sd=sd, metadata=metadata, dtype=torch.float32)
+            vae.throw_exception_if_invalid()
+            vae.patcher.cached_patcher_init = (load_fp32_vae_patcher, (vae_path, metadata, None))
+        if is_wan_upscale_vae(vae):
+            vae = patch_wan_upscale_vae(vae)
+        vae = set_vae_offload_policy(vae, disable_offload)
         return (vae, )
 
 
@@ -62,16 +72,20 @@ class VAEUtils_DisableVAEOffload:
     CATEGORY = "VAE-Utils"
 
     def set_offload(self, vae, disable_offload):
-        vae = copy.copy(vae)
-        if hasattr(vae, "patcher"):
-            vae.patcher = vae.patcher.clone()
-            vae.patcher.offload_device = (
-                vae.patcher.load_device
-                if disable_offload
-                else comfy.model_management.vae_offload_device()
-            )
-        vae.disable_offload = disable_offload
-        return (vae, )
+        return (set_vae_offload_policy(vae, disable_offload), )
+
+
+class VAEUtils_PatchWanUpscaleVAE:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": {"vae": ("VAE", )}}
+
+    RETURN_TYPES = ("VAE",)
+    FUNCTION = "patch"
+    CATEGORY = "VAE-Utils"
+
+    def patch(self, vae):
+        return (patch_wan_upscale_vae(vae), )
 
 
 class VAEUtils_VAEDecodeTiled:
@@ -458,6 +472,7 @@ class VAEUtils_ScaleLatents:
 COMBINED_MAPPINGS = {
     "VAEUtils_CustomVAELoader": (VAEUtils_CustomVAELoader, "Load VAE (VAE Utils)"),
     "VAEUtils_DisableVAEOffload": (VAEUtils_DisableVAEOffload, "Disable VAE Offload (VAE Utils)"),
+    "VAEUtils_PatchWanUpscaleVAE": (VAEUtils_PatchWanUpscaleVAE, "Patch Wan Upscale VAE (VAE Utils)"),
     "VAEUtils_VAEDecodeTiled": (VAEUtils_VAEDecodeTiled, "VAE Decode (VAE Utils)"),
     "VAEUtils_LatentUpscale": (VAEUtils_LatentUpscale, "Latent Upscale (VAE Utils)"),
     "VAEUtils_WanLatentPreview": (VAEUtils_WanLatentPreview, "Wan Latent Preview (VAE Utils)"),

@@ -113,12 +113,85 @@ def test_disable_offload_clones_patcher(monkeypatch, vae_utils_package):
     assert result.disable_offload is True
 
 
+class DummyVAE:
+    latent_dim = 3
+    output_channels = 3
+    conv_out_channels = 12
+
+    def __init__(self):
+        self.patcher = DummyPatcher()
+
+    def decode(self, _samples, vae_options={}):
+        return torch.arange(12, dtype=torch.float32).reshape(1, 1, 1, 12)
+
+    def decode_tiled(self, _samples, **_kwargs):
+        return torch.arange(12, dtype=torch.float32).reshape(1, 1, 1, 12)
+
+    def encode(self, pixels):
+        return pixels + 1
+
+
+def test_wan_upscale_patch_preserves_encode_and_unpacks_decode(vae_utils_package):
+    vae_patch = __import__(
+        vae_utils_package.nodes.patch_wan_upscale_vae.__module__,
+        fromlist=["patch_wan_upscale_vae"],
+    )
+    source = DummyVAE()
+    patched = vae_patch.patch_wan_upscale_vae(source)
+    samples = torch.zeros(1)
+
+    decoded = patched.decode(samples)
+    decoded_tiled = patched.decode_tiled(samples)
+
+    assert patched is not source
+    assert patched.patcher is source.patcher
+    assert torch.equal(patched.encode(samples), samples + 1)
+    assert decoded.shape == (1, 2, 2, 3)
+    assert torch.equal(decoded, decoded_tiled)
+    assert torch.equal(decoded[0, 0, 0], torch.tensor([0.0, 4.0, 8.0]))
+    assert torch.equal(decoded[0, 0, 1], torch.tensor([1.0, 5.0, 9.0]))
+    assert torch.equal(decoded[0, 1, 0], torch.tensor([2.0, 6.0, 10.0]))
+    assert torch.equal(decoded[0, 1, 1], torch.tensor([3.0, 7.0, 11.0]))
+
+
+def test_wan_upscale_patch_rejects_normal_vae(vae_utils_package):
+    vae_patch = __import__(
+        vae_utils_package.nodes.patch_wan_upscale_vae.__module__,
+        fromlist=["patch_wan_upscale_vae"],
+    )
+    source = DummyVAE()
+    source.conv_out_channels = 3
+
+    try:
+        vae_patch.patch_wan_upscale_vae(source)
+    except ValueError as error:
+        assert "packed decoder channels" in str(error)
+    else:
+        raise AssertionError("Normal VAE was accepted by Wan upscale patch.")
+
+
+def test_custom_loader_delegates_to_core(monkeypatch, vae_utils_package):
+    nodes = vae_utils_package.nodes
+    source = DummyVAE()
+    calls = []
+
+    monkeypatch.setattr(nodes.VAELoader, "load_vae", lambda _self, name: calls.append(name) or (source,))
+    monkeypatch.setattr(nodes, "patch_wan_upscale_vae", lambda vae: vae)
+    monkeypatch.setattr(nodes, "set_vae_offload_policy", lambda vae, disabled: (vae, disabled))
+
+    result = nodes.VAEUtils_CustomVAELoader().load_vae("upscale.safetensors", True)[0]
+
+    assert calls == ["upscale.safetensors"]
+    assert result == (source, True)
+
+
 def test_public_node_contract_is_unchanged(vae_utils_package):
     nodes = vae_utils_package.nodes
 
     assert set(nodes.COMBINED_MAPPINGS) == {
         "VAEUtils_CustomVAELoader",
         "VAEUtils_DisableVAEOffload",
+        "VAEUtils_PatchWanUpscaleVAE",
         "VAEUtils_VAEDecodeTiled",
         "VAEUtils_LatentUpscale",
         "VAEUtils_WanLatentPreview",
@@ -129,3 +202,4 @@ def test_public_node_contract_is_unchanged(vae_utils_package):
     assert nodes.VAEUtils_LatentUpscale.RETURN_TYPES == ("LATENT",)
     assert nodes.VAEUtils_WanLatentPreview.RETURN_TYPES == ("IMAGE",)
     assert nodes.VAEUtils_DisableVAEOffload.RETURN_TYPES == ("VAE",)
+    assert nodes.VAEUtils_PatchWanUpscaleVAE.RETURN_TYPES == ("VAE",)

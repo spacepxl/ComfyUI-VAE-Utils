@@ -27,7 +27,7 @@ import comfy.taesd.taesd
 from comfy.sd import VAE
 
 class CustomVAE(VAE):
-    def __init__(self, sd=None, device=None, config=None, dtype=None, metadata=None, disable_offload=False):
+    def __init__(self, sd=None, device=None, config=None, dtype=None, metadata=None):
         if model_management.is_amd():
             VAE_KL_MEM_RATIO = 2.73
         else:
@@ -46,7 +46,7 @@ class CustomVAE(VAE):
         self.process_input = lambda image: image * 2.0 - 1.0
         self.process_output = lambda image: torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0)
         self.working_dtypes = [torch.bfloat16, torch.float32]
-        self.disable_offload = disable_offload
+        self.disable_offload = False
         self.not_video = False
         self.size = None
 
@@ -361,9 +361,7 @@ class CustomVAE(VAE):
         self.output_device = model_management.intermediate_device()
 
         self.patcher = comfy.model_patcher.ModelPatcher(self.first_stage_model, load_device=self.device, offload_device=offload_device)
-        if self.disable_offload:
-            self.patcher.offload_device = self.device
-        logging.info("VAE load device: {}, offload device: {}, dtype: {}".format(self.device, self.patcher.offload_device, self.vae_dtype))
+        logging.info("VAE load device: {}, offload device: {}, dtype: {}".format(self.device, offload_device, self.vae_dtype))
 
     def decode(self, samples_in):
         """

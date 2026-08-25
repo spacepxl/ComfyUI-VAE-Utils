@@ -54,6 +54,9 @@ class CustomVAE(VAE):
         self.upscale_index_formula = None
         self.extra_1d_channel = None
         self.crop_input = True
+        self.handles_tiling = False
+        self.format_encoded = None
+        self.audio_sample_rate = 44100
 
         if config is None:
             if "decoder.mid.block_1.mix_factor" in sd:
